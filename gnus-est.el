@@ -1,16 +1,16 @@
 ;;; gnus-est.el --- Search mail with HyperEstraier -*- coding: utf-8; -*-
 
-;; Original Copyright (C) 2000, 2001, 2002, 2003, 2004
+;; Copyright (C) 2000, 2001, 2002, 2003, 2004
 ;; TSUCHIYA Masatoshi <tsuchiya@namazu.org>
 ;;
 ;; Modified by anonymous and <kawabata.taichi@gmail.com>
 
 ;; Author: TSUCHIYA Masatoshi <tsuchiya@namazu.org>
-;; Keywords: mail searching namazu, hyperestraier
+;; Keywords: mail searching hyperestraier
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
-;; the Free Software Foundation; either version 2, or (at your option)
+;; the Free Software Foundation; either version 3, or (at your option)
 ;; any later version.
 
 ;; This program is distributed in the hope that it will be useful,
@@ -19,14 +19,12 @@
 ;; GNU General Public License for more details.
 
 ;; You should have received a copy of the GNU General Public License
-;; along with this program; if not, you can either send email to this
-;; program's maintainer or write to: The Free Software Foundation,
-;; Inc.; 59 Temple Place, Suite 330; Boston, MA 02111-1307, USA.
+;; along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 
 ;;; Commentary:
 
-;; This file is modification of gnus-namazu.el 
+;; This file is a modification of gnus-namazu.el 
 
 ;; This file defines the command to search mails and persistent
 ;; articles with HyperEstraier and to browse its results with Gnus.
@@ -52,6 +50,7 @@
 ;;       index of articles.
 ;;
 ;;   (4) In group buffer or in summary buffer, type C-c C-n query RET.
+;;       (or M-x gnus-est-search for other buffer.)
 
 
 ;;; Install:
@@ -76,19 +75,19 @@
 ;; second command generates index files of mails and persistent
 ;; articles.
 ;;
-;; In order to update index for incoming articles, this module
+;; In order to update indices for incoming articles, this module
 ;; automatically runs estcmd, the indexer of HyperEstraier, at an interval of
-;; 1 day; this period is set to `gnus-est-index-update-interval'.
+;; 3 days; this period is set to `gnus-est-index-update-interval'.
 ;;
-;; Index will be updated when `gnus-est-search' is called.  If
-;; you want to update index every time when Gnus is started, you can put
+;; Indices will be updated when `gnus-est-search' is called.  If
+;; you want to update indices every time when Gnus is started, you can put
 ;; the following expression to your ~/.gnus.
 ;;
-;;      (add-hook 'gnus-startup-hook 'gnus-est-update-index)
+;;      (add-hook 'gnus-startup-hook 'gnus-est-update-indices)
 ;;
 ;; In order to control estcmd closely, disable the automatic updating
-;; feature and run `estcmd gather' yourself.  In this case, set nil to
-;; the following option.
+;; feature and run `estcmd gather' yourself.  In this case, set nil to the
+;; above option.
 ;;
 ;;      (setq gnus-est-index-update-interval nil)
 ;;
@@ -147,19 +146,19 @@ If you put your index on a remote server, set this option as follows:
           '(\"ssh\" \"-x\" \"remote-server\"))
 
 This makes gnus-est execute \"ssh -x remote-server estcmd ...\"
-instead of executing \"casket\" directly."
+instead of executing \"estcmd\" directly."
   :type '(repeat string)
   :group 'gnus-est)
 
 (defcustom gnus-est-additional-arguments nil
   "*Additional arguments of HyperEstraier.
-The options `-q', `-a', and `-l' are always used, very few other
+The options `-vu', `-max', and `-1' are always used, very few other
 options make any sense in this context."
   :type '(repeat string)
   :group 'gnus-est)
 
 (defcustom gnus-est-index-update-interval
-  86400				; 1 day == 86400 seconds.
+  259200				; 3 days == 259200 seconds.
   "*Number of seconds between running the indexer of HyperEstraier."
   :type '(choice (const :tag "Never run the indexer" nil)
 		 (integer :tag "Number of seconds"))
@@ -177,10 +176,13 @@ options make any sense in this context."
   :group 'gnus-est)
 
 (defcustom gnus-est-field-keywords
-  '("date" "from" "newsgroups" "size" "subject" "summary" "to" "uri")
+  '("cdate:" "cdate>" "cdate<" "author:" "size>" "size<" "title:" "uri:")
   "*List of keywords to do field-search."
   :type '(repeat string)
   :group 'gnus-est)
+
+(defvar gnus-est-field-keywords-regexp
+  (regexp-opt gnus-est-field-keywords t))
 
 (defcustom gnus-est-coding-system
   'utf-8
@@ -235,21 +237,6 @@ This means that the group \"nnimap+server:INBOX.group\" is placed in
 	   (when (featurep 'gnus-est)
 	     (gnus-est/make-directory-table t)))))
 
-(defcustom gnus-est-target-directories
-  (delq nil
-        (mapcar (lambda (dir)
-                  (when (file-directory-p dir) dir))
-                (append
-                 (mapcar 'gnus-est/server-directory
-                         (gnus-est/indexed-servers))
-                 (list
-                  (expand-file-name gnus-cache-directory)
-                  (expand-file-name gnus-agent-directory)))))
-  "*Target directories of gnus-est."
-  :type '(repeat string)
-  :group 'gnus-est)
- 
-
 ;;; Internal Variable:
 (defconst gnus-est/group-name-regexp "\\`nnvirtual:est-search\\?")
 
@@ -276,6 +263,8 @@ This means that the group \"nnimap+server:INBOX.group\" is placed in
 (defmacro gnus-est/article-group  (x) `(car ,x))
 (defmacro gnus-est/article-number (x) `(cdr ,x))
 
+
+;;
 (defsubst gnus-est/indexed-servers ()
   "Choice appropriate servers from opened ones, and return thier list."
   (append
@@ -295,7 +284,7 @@ This means that the group \"nnimap+server:INBOX.group\" is placed in
 		       gnus-est-coding-system)
 		 gnus-group-name-charset-group-alist))))
   (unless gnus-est-command-prefix
-    (gnus-est-update-index)))
+    (gnus-est-update-indices)))
 
 (defun gnus-est/server-directory (server)
   "Return the top directory of the server SERVER."
@@ -326,6 +315,36 @@ This means that the group \"nnimap+server:INBOX.group\" is placed in
       (delete-region (point) (point-at-eol)))
     (forward-line 1)))
 
+(defun gnus-est/query-to-attr-args (query)
+  "query のフィールド指定を HyperEstraier の attr指定に置き換え、
+queryを先端に入れたリストを返す。
+例：+title:hoge +date>2011/01/01 moge
+→ '(\"moge\" \"-attr\" \"@title STRINC hoge\" \"-attr\" \"@CDATE NUMLE 2011/01/01\")"
+  (let (attr-args)
+    (with-temp-buffer 
+      (insert query)
+      (goto-char (point-min))
+      (while (re-search-forward 
+              (concat "\\+" gnus-est-field-keywords-regexp "\\([^ ]+\\) ") 
+	      nil t)
+        (let ((attr (substring (match-string-no-properties 1) 0 -1))
+              (oper (substring (match-string-no-properties 1) -1))
+              (subj (match-string-no-properties 2)))
+	  (message "debug %s" oper)
+          (setq attr-args
+                (nconc (list "-attr"
+                             (concat
+                              "@" attr
+                              (cond ((and (equal oper ":") (equal attr "cdate"))
+				     " NUMEQ ")
+				    ((equal oper ":") " STRINC ")
+				    ((equal oper "<") " NUMLE ")
+				    (t " NUMGE "))
+                              subj))
+                       attr-args))))
+      (cons (buffer-substring-no-properties (point) (point-max))
+            attr-args))))
+
 (defsubst gnus-est/call-est (query)
   (let* ((coding-system-for-read gnus-est-coding-system)
 	 (coding-system-for-write gnus-est-coding-system)
@@ -333,30 +352,7 @@ This means that the group \"nnimap+server:INBOX.group\" is placed in
 	   (cons gnus-est-coding-system gnus-est-coding-system))
 	 program-coding-system-alist
 	 (file-name-coding-system gnus-est-coding-system)
-	 (attr-arg
-          ;; 独自拡張
-          ;; 例："+cdate>2011/01/01 +title:漢字"
-          ;; 2011年以降でタイトルに「漢字」を含むメール
-	  (with-temp-buffer
-	    (insert query)
-	    (goto-char (point-min))
-	    (setq attr-arg nil)
-	    (while (re-search-forward "\\+\\([^:<>]+\\)\\([:><]\\)\\([^ ]+\\)" nil t)
-              (let ((attr (concat "@" (match-string-no-properties 1)))
-                    (oper (match-string-no-properties 2))
-                    (subj (match-string-no-properties 3)))
-                (setq attr-arg
-                      (nconc (list "-attr"
-                                   (concat
-                                    attr
-                                    (if (equal oper ":") " STRINC "
-                                      (if (equal oper "<") " NUMLE "
-                                        " NUMGE "))
-                                    subj))
-			   attr-arg)))
-	      (replace-match ""))
-	    (setq query (buffer-substring-no-properties (point-min) (point-max)))
-	    attr-arg))
+	 (attr-args (gnus-est/query-to-attr-args query))
 	 (commands
 	  (append gnus-est-command-prefix
 		  (list gnus-est-command
@@ -364,12 +360,13 @@ This means that the group \"nnimap+server:INBOX.group\" is placed in
 			"-vu"
 			"-max"
 			"-1")
-		  attr-arg
+		  (cdr attr-args)
 		  gnus-est-additional-arguments
 		  (list gnus-est-index-directory)
-		  (list query))))
+		  (list (car attr-args)))))
     (message "debug: estcmd = %s" commands)
     (apply 'call-process (car commands) nil t nil (cdr commands))))
+
 
 (defvar gnus-est/directory-table nil)
 (defun gnus-est/make-directory-table (&optional force)
@@ -555,7 +552,7 @@ This means that the group \"nnimap+server:INBOX.group\" is placed in
 	     (completions
 	      (all-completions
 	       partial
-	       (mapcar 'list gnus-est-field-keywords))))
+	       gnus-est-field-keywords))) ;; remove (mapcar 'list)
 	(cond
 	 ((null completions)
 	  (gnus-est/message "No completions of %s" partial))
@@ -569,7 +566,7 @@ This means that the group \"nnimap+server:INBOX.group\" is placed in
 	  (let ((x (try-completion partial (mapcar 'list completions))))
 	    (if (string= x partial)
 		(if (and (eq last-command
-			     'gnus-est/field-keyword-completion)
+			     'gnus-est/complete-query)
 			 completion-auto-help)
 		    (with-output-to-temp-buffer "*Completions*"
 		      (display-completion-list completions))
@@ -578,26 +575,19 @@ This means that the group \"nnimap+server:INBOX.group\" is placed in
 	      (delete-region (match-beginning 1) (match-end 1))
 	      (insert x)
 	      (setq pos (point))))))))
-     ((and (looking-at "\\+subject:")
+     ((and (looking-at "\\+title:")
 	   (= pos (match-end 0)))
       (let ((s (gnus-est/get-current-subject)))
 	(when s
 	  (goto-char pos)
 	  (insert "\"" s "\"")
 	  (setq pos (point)))))
-     ((and (looking-at "\\+from:")
+     ((and (looking-at "\\+cdate[:<>]")
 	   (= pos (match-end 0)))
       (let ((f (gnus-est/get-current-from)))
 	(when f
 	  (goto-char pos)
 	  (insert "\"" f "\"")
-	  (setq pos (point)))))
-     ((and (looking-at "\\+to:")
-	   (= pos (match-end 0)))
-      (let ((to (gnus-est/get-current-to)))
-	(when to
-	  (goto-char pos)
-	  (insert "\"" to "\"")
 	  (setq pos (point))))))
     (goto-char pos)))
 
@@ -720,17 +710,6 @@ and make a virtual group contains its results."
 		 '<)))
       (message "No entry."))))
 
-;; FIXME
-;; statusファイルが不明なので、dummyにしておく。
-(defmacro gnus-est/lock-file-name ()
-  `(expand-file-name "dummy" ,gnus-est-index-directory))
-
-;; FIXME
-;; statusファイルがないので、_list にしておく。
-(defmacro gnus-est/status-file-name ()
-  `(expand-file-name "_list" ,gnus-est-index-directory))
-
-;; FIXME
 ;; indexファイルがなく、ディレクトリのみなので、_metaで代用しておく。
 (defmacro gnus-est/meta-file-name ()
   `(expand-file-name "_meta" ,gnus-est-index-directory))
@@ -745,32 +724,44 @@ and make a virtual group contains its results."
 ;;	(delete-file tmpfile)))))
 
 ;;;###autoload
-(defun gnus-est-create-index (&optional force)
-  "Create HyperEstraier index."
+(defun gnus-est-create-index (&optional directory target-directories force)
+  "Create index under DIRECTORY."
   (interactive)
-  (if (file-exists-p (gnus-est/lock-file-name))
+  (unless directory (setq directory gnus-est-index-directory))
+  (unless target-directories
+    (setq target-directories
+	  (delq nil
+		(mapcar (lambda (dir)
+			  (when (file-directory-p dir) dir))
+			(append
+			 (mapcar 'gnus-est/server-directory
+				 (gnus-est/indexed-servers))
+			 (list
+			  (expand-file-name gnus-cache-directory)
+			  (expand-file-name gnus-agent-directory)))))))
+  (if nil ; (file-exists-p (gnus-est/lock-file-name))
       (when force
 	(error "Found lock file: %s" (gnus-est/lock-file-name)))
     (with-current-buffer (get-buffer-create " *estcmd gather*")
       (erase-buffer)
-      (unless (file-directory-p gnus-est-index-directory)
-	(make-directory gnus-est-index-directory t))
-      (setq default-directory gnus-est-index-directory)
-      (dolist (target-directory gnus-est-target-directories)
+      (unless (file-directory-p directory)
+	(make-directory directory t))
+      (setq default-directory directory)
+      (dolist (target-directory target-directories)
         (let ((args (append gnus-est-make-index-arguments
-                            (list gnus-est-index-directory)
+                            (list directory)
                             (list target-directory))))
           (insert "% " gnus-est-make-index-command " "
                   (mapconcat 'identity args " ") "\n")
           (goto-char (point-max))
           (when force
             (pop-to-buffer (current-buffer)))
-          (message "Make index at %s..." gnus-est-index-directory)
+          (message "Make index at %s..." directory)
           (unwind-protect
               (message "%s" (cons gnus-est-make-index-command args))
 	    (apply 'call-process gnus-est-make-index-command nil t t args)
             (gnus-est/gather-cleanup))
-          (message "Make index at %s...done" gnus-est-index-directory)))
+          (message "Make index at %s...done" directory)))
       (unless force
         (kill-buffer (current-buffer))))
     (gnus-est/make-directory-table t)))
@@ -803,18 +794,11 @@ that is set to `gnus-est-index-update-interval'"
 			  nil))
     (if gnus-est/update-process
 	(error-message "%s" "Can not run two update processes simultaneously")
-      (and (or force
-	       (gnus-est/index-old-p))
-	   (let ((status-file (gnus-est/status-file-name)))
-	     (or (file-exists-p status-file)
-		 (error-message "Can not find status file: %s" status-file)))
-	   (let ((lock-file (gnus-est/lock-file-name)))
-	     (or (not (file-exists-p lock-file))
-		 (error-message "Found lock file: %s" lock-file)))
-	   t))))
+      (or force
+	  (gnus-est/index-old-p)))))
 
 ;;;###autoload
-(defun gnus-est-update-index (&optional force)
+(defun gnus-est-update-indices (&optional directories force)
   "Update the index."
   (interactive)
   (when (gnus-est/update-p force)
@@ -824,14 +808,14 @@ that is set to `gnus-est-index-update-interval'"
       (unless (file-directory-p gnus-est-index-directory)
 	(make-directory gnus-est-index-directory t))
       (setq default-directory gnus-est-index-directory)
-      (let ((proc (apply 'start-process 
+      (let ((proc (apply 'start-process
                          gnus-est-make-index-command
                          (current-buffer)
                          gnus-est-make-index-command
                          (append
                           gnus-est-make-index-arguments
                           (list gnus-est-index-directory)
-                          gnus-est-target-directories))))
+                          target-directories))))
 	(if (processp proc)
 	    (prog1 (setq gnus-est/update-process proc)
 	      (process-kill-without-query proc)
@@ -867,8 +851,7 @@ that is set to `gnus-est-index-update-interval'"
 	  (unless (or debug-on-error debug-on-quit)
 	    (kill-buffer buffer)))))))
   (setq gnus-est/update-process nil)
-  (unless (gnus-est-update-index (cdr gnus-est/update-directory)
-				   (car gnus-est/update-directory))
+  (unless (gnus-est-update-indices gnus-est/update-directory)
     (gnus-est/make-directory-table t)))
 
 ;;;###autoload
